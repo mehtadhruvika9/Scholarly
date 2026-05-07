@@ -509,7 +509,7 @@ export default function App() {
                   setScreen('courses');
                 }} 
                 onDelete={() => handleDeleteUser(user.id)}
-                onBack={() => setScreen(users.length > 1 ? 'user_selection' : 'landing')} 
+                onBack={() => setScreen('landing')} 
               />
             </motion.div>
           )}
@@ -525,7 +525,7 @@ export default function App() {
                 initialData={user} 
                 isLoggedIn={isLoggedIn}
                 darkMode={darkMode}
-                onBack={() => setScreen(users.length > 1 ? 'user_selection' : users.length === 1 ? 'login' : 'landing')}
+                onBack={() => setScreen('landing')}
                 hasExistingUsers={users.length > 0}
               />
             </motion.div>
@@ -1105,7 +1105,7 @@ function ProfileScreen({ onSubmit, initialData, isLoggedIn, darkMode, onBack, ha
                 : 'bg-stone-50 text-stone-500 border-stone-100 hover:bg-stone-100 hover:text-stone-900'
             }`}
           >
-            <ArrowLeft size={14} />
+            <LogIn size={14} />
             I'm a returning student
           </button>
         )}
