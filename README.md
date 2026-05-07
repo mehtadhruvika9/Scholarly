@@ -70,7 +70,3 @@ Scholarly solves this by:
 Built to simplify course scheduling and explore how AI can solve real-world student problems.
 
 
-
-## SUPPORT
-
-If you find this project useful, consider giving it a star.
