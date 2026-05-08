@@ -44,7 +44,7 @@ Creating a timetable manually can be:
 
 Scholarly simplifies this process by automating schedule generation and conflict resolution.
 
----
+
 
 ## SYSTEM OVERVIEW
 
