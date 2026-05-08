@@ -83,6 +83,7 @@ export default function App() {
       const savedUserId = localStorage.getItem('timetable_active_user_id');
       const savedLogin = localStorage.getItem('timetable_is_logged_in');
       const savedDarkMode = localStorage.getItem('timetable_dark_mode');
+      const savedScreen = localStorage.getItem('timetable_screen');
       
       const parsedUsers: UserProfile[] = savedUsersList ? JSON.parse(savedUsersList) : [];
       setUsers(parsedUsers);
@@ -113,7 +114,24 @@ export default function App() {
               });
               setCourses(migrated);
             }
-            setScreen('courses');
+
+            // Load user-specific results and selected schedule
+            const savedResults = localStorage.getItem(`timetable_results_${activeUser.id}`);
+            if (savedResults) {
+              setResults(JSON.parse(savedResults));
+            }
+
+            const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${activeUser.id}`);
+            if (savedSelectedSchedule) {
+              setSelectedSchedule(JSON.parse(savedSelectedSchedule));
+            }
+
+            // Set screen
+            if (savedScreen && ['courses', 'course_summary', 'results', 'final_view'].includes(savedScreen)) {
+              setScreen(savedScreen as any);
+            } else {
+              setScreen('courses');
+            }
           } else {
             setScreen('landing');
           }
@@ -142,11 +160,18 @@ export default function App() {
     if (user) {
       localStorage.setItem('timetable_active_user_id', user.id);
       localStorage.setItem(`timetable_courses_${user.id}`, JSON.stringify(courses));
+      localStorage.setItem(`timetable_results_${user.id}`, JSON.stringify(results));
+      if (selectedSchedule) {
+        localStorage.setItem(`timetable_selected_schedule_${user.id}`, JSON.stringify(selectedSchedule));
+      } else {
+        localStorage.removeItem(`timetable_selected_schedule_${user.id}`);
+      }
     }
 
     localStorage.setItem('timetable_is_logged_in', isLoggedIn.toString());
     localStorage.setItem('timetable_dark_mode', darkMode.toString());
-  }, [users, user, courses, isLoggedIn, dataLoaded, darkMode]);
+    localStorage.setItem('timetable_screen', screen);
+  }, [users, user, courses, results, selectedSchedule, isLoggedIn, dataLoaded, darkMode, screen]);
 
   const handleAuth = (data: UserProfile) => {
     // Check if user already exists by ID first, then by name/avatar
@@ -189,13 +214,34 @@ export default function App() {
       setCourses([]);
     }
 
+    // Load results and selected schedule
+    const savedResults = localStorage.getItem(`timetable_results_${finalUser.id}`);
+    if (savedResults) {
+      setResults(JSON.parse(savedResults));
+    } else {
+      setResults([]);
+    }
+
+    const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${finalUser.id}`);
+    if (savedSelectedSchedule) {
+      setSelectedSchedule(JSON.parse(savedSelectedSchedule));
+    } else {
+      setSelectedSchedule(null);
+    }
+
     setIsLoggedIn(true);
     setScreen('courses');
   };
 
   const handleLogout = () => {
     setIsLoggedIn(false);
+    setUser(null);
+    setCourses([]);
+    setResults([]);
+    setSelectedSchedule(null);
     localStorage.removeItem('timetable_active_user_id');
+    localStorage.removeItem('timetable_is_logged_in');
+    localStorage.removeItem('timetable_screen');
     setScreen('landing');
   };
 
@@ -234,7 +280,21 @@ export default function App() {
           setCourses([]);
         }
         
-        setResults([]);
+        // Load results and selected schedule
+        const savedResults = localStorage.getItem(`timetable_results_${returningUser.id}`);
+        if (savedResults) {
+          setResults(JSON.parse(savedResults));
+        } else {
+          setResults([]);
+        }
+
+        const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${returningUser.id}`);
+        if (savedSelectedSchedule) {
+          setSelectedSchedule(JSON.parse(savedSelectedSchedule));
+        } else {
+          setSelectedSchedule(null);
+        }
+        
         setScreen('login');
       }
     }
@@ -258,7 +318,21 @@ export default function App() {
       setCourses([]);
     }
     
-    setResults([]);
+    // Load results and selected schedule
+    const savedResults = localStorage.getItem(`timetable_results_${u.id}`);
+    if (savedResults) {
+      setResults(JSON.parse(savedResults));
+    } else {
+      setResults([]);
+    }
+
+    const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${u.id}`);
+    if (savedSelectedSchedule) {
+      setSelectedSchedule(JSON.parse(savedSelectedSchedule));
+    } else {
+      setSelectedSchedule(null);
+    }
+    
     setScreen('login');
   };
 
@@ -266,10 +340,14 @@ export default function App() {
     const updatedUsers = users.filter(u => u.id !== userId);
     setUsers(updatedUsers);
     localStorage.removeItem(`timetable_courses_${userId}`);
+    localStorage.removeItem(`timetable_results_${userId}`);
+    localStorage.removeItem(`timetable_selected_schedule_${userId}`);
     
     if (user?.id === userId) {
       setUser(null);
       setCourses([]);
+      setResults([]);
+      setSelectedSchedule(null);
       setIsLoggedIn(false);
     }
     
