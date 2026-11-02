@@ -2,5 +2,7 @@
   "name": "Student Planner",
   "description": "A smart scheduling app to help students create conflict-free class timetables automatically.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
