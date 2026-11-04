@@ -76,7 +76,28 @@ export default function App() {
   const [dataLoaded, setDataLoaded] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
 
-  // Load from LocalStorage
+  // Helper to safely parse storage with fallback
+  const safeGetStorage = <T,>(key: string, fallbackKey?: string): T | null => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw && raw !== 'undefined' && raw !== 'null') {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) ? parsed.length > 0 : parsed !== null) return parsed;
+      }
+      if (fallbackKey) {
+        const fallbackRaw = localStorage.getItem(fallbackKey);
+        if (fallbackRaw && fallbackRaw !== 'undefined' && fallbackRaw !== 'null') {
+          const parsed = JSON.parse(fallbackRaw);
+          if (Array.isArray(parsed) ? parsed.length > 0 : parsed !== null) return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn("Storage parse error", key, e);
+    }
+    return null;
+  };
+
+  // Load from LocalStorage on mount
   useEffect(() => {
     try {
       const savedUsersList = localStorage.getItem('timetable_users');
@@ -92,48 +113,53 @@ export default function App() {
         setDarkMode(true);
       }
       
-      if (savedUserId && parsedUsers.length > 0) {
-        const activeUser = parsedUsers.find(u => u.id === savedUserId);
-        if (activeUser) {
-          setUser(activeUser);
-          if (savedLogin === 'true') {
-            setIsLoggedIn(true);
-            
-            // Load user-specific courses
-            const savedCourses = localStorage.getItem(`timetable_courses_${activeUser.id}`);
-            if (savedCourses) {
-              const parsed: any[] = JSON.parse(savedCourses);
-              // Migration check: ensure data has 'sections' instead of 'slots' and unique IDs
-              const migrated = parsed.map((c, i) => {
-                let updatedCourse = { ...c };
-                if (c.slots && !c.sections) {
-                  updatedCourse.sections = [{ id: 'default', name: 'Original Section', slots: c.slots }];
-                  delete (updatedCourse as any).slots;
-                }
-                return updatedCourse;
-              });
-              setCourses(migrated);
-            }
+      const activeUser = (savedUserId && parsedUsers.find(u => u.id === savedUserId)) || (parsedUsers.length > 0 ? parsedUsers[0] : null);
 
-            // Load user-specific results and selected schedule
-            const savedResults = localStorage.getItem(`timetable_results_${activeUser.id}`);
-            if (savedResults) {
-              setResults(JSON.parse(savedResults));
-            }
+      if (activeUser) {
+        setUser(activeUser);
 
-            const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${activeUser.id}`);
-            if (savedSelectedSchedule) {
-              setSelectedSchedule(JSON.parse(savedSelectedSchedule));
+        // Load courses safely
+        const loadedCourses = safeGetStorage<any[]>(`timetable_courses_${activeUser.id}`, 'timetable_courses');
+        let initialCourses: Course[] = [];
+        if (loadedCourses && loadedCourses.length > 0) {
+          initialCourses = loadedCourses.map((c) => {
+            let updatedCourse = { ...c };
+            if (c.slots && !c.sections) {
+              updatedCourse.sections = [{ id: 'default', name: 'Original Section', slots: c.slots }];
+              delete (updatedCourse as any).slots;
             }
+            return updatedCourse;
+          });
+          setCourses(initialCourses);
+        }
 
-            // Set screen
-            if (savedScreen && ['courses', 'course_summary', 'results', 'final_view'].includes(savedScreen)) {
-              setScreen(savedScreen as any);
+        // Load solutions / results safely
+        const loadedResults = safeGetStorage<Schedule[]>(`timetable_results_${activeUser.id}`, 'timetable_results');
+        if (loadedResults && loadedResults.length > 0) {
+          setResults(loadedResults);
+        }
+
+        // Load selected finalized schedule safely
+        const loadedSelected = safeGetStorage<Schedule>(`timetable_selected_schedule_${activeUser.id}`, 'timetable_selected_schedule');
+        if (loadedSelected) {
+          setSelectedSchedule(loadedSelected);
+        }
+
+        if (savedLogin === 'true') {
+          setIsLoggedIn(true);
+
+          if (savedScreen && ['courses', 'course_summary', 'results', 'final_view'].includes(savedScreen)) {
+            if (savedScreen === 'final_view' && !loadedSelected) {
+              setScreen(loadedResults && loadedResults.length > 0 ? 'results' : 'courses');
             } else {
-              setScreen('courses');
+              setScreen(savedScreen as any);
             }
+          } else if (loadedSelected) {
+            setScreen('final_view');
+          } else if (loadedResults && loadedResults.length > 0) {
+            setScreen('results');
           } else {
-            setScreen('landing');
+            setScreen('courses');
           }
         } else {
           setScreen('landing');
@@ -149,7 +175,7 @@ export default function App() {
     }
   }, []);
 
-  // Save changes
+  // Save changes safely without overwriting non-empty storage with empty states
   useEffect(() => {
     if (!dataLoaded) return;
 
@@ -157,31 +183,44 @@ export default function App() {
       localStorage.setItem('timetable_users', JSON.stringify(users));
     }
     
-    if (user) {
+    if (user && isLoggedIn) {
       localStorage.setItem('timetable_active_user_id', user.id);
-      localStorage.setItem(`timetable_courses_${user.id}`, JSON.stringify(courses));
-      localStorage.setItem(`timetable_results_${user.id}`, JSON.stringify(results));
+
+      if (courses.length > 0) {
+        localStorage.setItem(`timetable_courses_${user.id}`, JSON.stringify(courses));
+        localStorage.setItem('timetable_courses', JSON.stringify(courses));
+      }
+
+      if (results.length > 0) {
+        localStorage.setItem(`timetable_results_${user.id}`, JSON.stringify(results));
+        localStorage.setItem('timetable_results', JSON.stringify(results));
+      }
+
       if (selectedSchedule) {
         localStorage.setItem(`timetable_selected_schedule_${user.id}`, JSON.stringify(selectedSchedule));
-      } else {
-        localStorage.removeItem(`timetable_selected_schedule_${user.id}`);
+        localStorage.setItem('timetable_selected_schedule', JSON.stringify(selectedSchedule));
       }
+
+      localStorage.setItem('timetable_is_logged_in', 'true');
+    } else if (!isLoggedIn && dataLoaded) {
+      localStorage.setItem('timetable_is_logged_in', 'false');
     }
 
-    localStorage.setItem('timetable_is_logged_in', isLoggedIn.toString());
     localStorage.setItem('timetable_dark_mode', darkMode.toString());
-    localStorage.setItem('timetable_screen', screen);
+    if (isLoggedIn && ['courses', 'course_summary', 'results', 'final_view'].includes(screen)) {
+      localStorage.setItem('timetable_screen', screen);
+    }
   }, [users, user, courses, results, selectedSchedule, isLoggedIn, dataLoaded, darkMode, screen]);
 
   const handleAuth = (data: UserProfile) => {
-    // Check if user already exists by ID first, then by name/avatar
     let existingIndex = -1;
     if (data.id) {
       existingIndex = users.findIndex(u => u.id === data.id);
     }
-    
-    if (existingIndex === -1) {
-      existingIndex = users.findIndex(u => u.name === data.name && u.avatarIcon === data.avatarIcon);
+    if (existingIndex === -1 && data.name) {
+      existingIndex = users.findIndex(
+        u => u.name.trim().toLowerCase() === data.name.trim().toLowerCase()
+      );
     }
 
     let updatedUsers = [...users];
@@ -200,47 +239,39 @@ export default function App() {
     setUser(finalUser);
     
     // Load courses for this user if they exist
-    const savedCourses = localStorage.getItem(`timetable_courses_${finalUser.id}`);
-    if (savedCourses) {
-      const parsed = JSON.parse(savedCourses);
-      const migrated = parsed.map((c: any) => {
+    const savedCourses = safeGetStorage<any[]>(`timetable_courses_${finalUser.id}`, 'timetable_courses');
+    if (savedCourses && savedCourses.length > 0) {
+      const migrated = savedCourses.map((c: any) => {
         if (c.slots && !c.sections) {
           return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
         }
         return c;
       });
       setCourses(migrated);
-    } else {
-      setCourses([]);
     }
 
     // Load results and selected schedule
-    const savedResults = localStorage.getItem(`timetable_results_${finalUser.id}`);
-    if (savedResults) {
-      setResults(JSON.parse(savedResults));
-    } else {
-      setResults([]);
+    const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${finalUser.id}`, 'timetable_results');
+    if (savedResults && savedResults.length > 0) {
+      setResults(savedResults);
     }
 
-    const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${finalUser.id}`);
+    const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${finalUser.id}`, 'timetable_selected_schedule');
     if (savedSelectedSchedule) {
-      setSelectedSchedule(JSON.parse(savedSelectedSchedule));
-    } else {
-      setSelectedSchedule(null);
+      setSelectedSchedule(savedSelectedSchedule);
     }
 
     setIsLoggedIn(true);
-    setScreen('courses');
+    if (savedSelectedSchedule) {
+      setScreen('final_view');
+    } else {
+      setScreen('courses');
+    }
   };
 
   const handleLogout = () => {
     setIsLoggedIn(false);
-    setUser(null);
-    setCourses([]);
-    setResults([]);
-    setSelectedSchedule(null);
-    localStorage.removeItem('timetable_active_user_id');
-    localStorage.removeItem('timetable_is_logged_in');
+    localStorage.setItem('timetable_is_logged_in', 'false');
     localStorage.removeItem('timetable_screen');
     setScreen('landing');
   };
@@ -248,8 +279,6 @@ export default function App() {
   const handleLandingChoice = (type: 'new' | 'returning') => {
     if (type === 'new') {
       setUser(null);
-      setCourses([]);
-      setResults([]);
       setIsLoggedIn(false);
       setScreen('profile');
     } else {
@@ -265,34 +294,26 @@ export default function App() {
         setUser(returningUser);
         
         // Load courses for this user
-        const savedCourses = localStorage.getItem(`timetable_courses_${returningUser.id}`);
-        if (savedCourses) {
-          const parsed = JSON.parse(savedCourses);
-          // Migration check
-          const migrated = parsed.map((c: any) => {
+        const savedCourses = safeGetStorage<any[]>(`timetable_courses_${returningUser.id}`, 'timetable_courses');
+        if (savedCourses && savedCourses.length > 0) {
+          const migrated = savedCourses.map((c: any) => {
             if (c.slots && !c.sections) {
               return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
             }
             return c;
           });
           setCourses(migrated);
-        } else {
-          setCourses([]);
         }
         
         // Load results and selected schedule
-        const savedResults = localStorage.getItem(`timetable_results_${returningUser.id}`);
-        if (savedResults) {
-          setResults(JSON.parse(savedResults));
-        } else {
-          setResults([]);
+        const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${returningUser.id}`, 'timetable_results');
+        if (savedResults && savedResults.length > 0) {
+          setResults(savedResults);
         }
 
-        const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${returningUser.id}`);
+        const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${returningUser.id}`, 'timetable_selected_schedule');
         if (savedSelectedSchedule) {
-          setSelectedSchedule(JSON.parse(savedSelectedSchedule));
-        } else {
-          setSelectedSchedule(null);
+          setSelectedSchedule(savedSelectedSchedule);
         }
         
         setScreen('login');
@@ -304,33 +325,26 @@ export default function App() {
     setUser(u);
     
     // Load courses for this user
-    const savedCourses = localStorage.getItem(`timetable_courses_${u.id}`);
-    if (savedCourses) {
-      const parsed = JSON.parse(savedCourses);
-      const migrated = parsed.map((c: any) => {
+    const savedCourses = safeGetStorage<any[]>(`timetable_courses_${u.id}`, 'timetable_courses');
+    if (savedCourses && savedCourses.length > 0) {
+      const migrated = savedCourses.map((c: any) => {
         if (c.slots && !c.sections) {
           return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
         }
         return c;
       });
       setCourses(migrated);
-    } else {
-      setCourses([]);
     }
     
     // Load results and selected schedule
-    const savedResults = localStorage.getItem(`timetable_results_${u.id}`);
-    if (savedResults) {
-      setResults(JSON.parse(savedResults));
-    } else {
-      setResults([]);
+    const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${u.id}`, 'timetable_results');
+    if (savedResults && savedResults.length > 0) {
+      setResults(savedResults);
     }
 
-    const savedSelectedSchedule = localStorage.getItem(`timetable_selected_schedule_${u.id}`);
+    const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${u.id}`, 'timetable_selected_schedule');
     if (savedSelectedSchedule) {
-      setSelectedSchedule(JSON.parse(savedSelectedSchedule));
-    } else {
-      setSelectedSchedule(null);
+      setSelectedSchedule(savedSelectedSchedule);
     }
     
     setScreen('login');
@@ -492,6 +506,11 @@ export default function App() {
 
   const viewScheduleDetails = (schedule: Schedule) => {
     setSelectedSchedule(schedule);
+    if (user) {
+      localStorage.setItem(`timetable_selected_schedule_${user.id}`, JSON.stringify(schedule));
+    }
+    localStorage.setItem('timetable_selected_schedule', JSON.stringify(schedule));
+    localStorage.setItem('timetable_screen', 'final_view');
     setScreen('final_view');
   };
 
@@ -503,9 +522,16 @@ export default function App() {
   return (
     <div className={`min-h-screen transition-colors duration-300 ${darkMode ? 'bg-black text-stone-200' : 'bg-[#fcfbf9] text-zinc-800'} font-sans pb-12`}>
       {/* Header */}
-      <header className={`px-6 py-10 max-w-5xl mx-auto flex flex-col md:flex-row md:items-end justify-between gap-6 font-sans no-print border-b mb-8 ${darkMode ? 'border-stone-800' : 'border-stone-100'}`}>
+      <header className={`px-6 py-6 md:py-8 max-w-5xl mx-auto flex flex-col md:flex-row md:items-center justify-between gap-5 font-sans no-print border-b mb-8 ${darkMode ? 'border-stone-800' : 'border-stone-100'}`}>
         <div>
-          <div className="flex items-center gap-3 mb-1">
+          <div 
+            className={`flex items-center gap-3 mb-1 ${isLoggedIn ? 'cursor-pointer hover:opacity-85 transition-opacity' : ''}`}
+            onClick={() => {
+              if (isLoggedIn) {
+                setScreen(selectedSchedule ? 'final_view' : 'courses');
+              }
+            }}
+          >
             <div className={`p-2.5 rounded-full shadow-sm flex items-center justify-center ${darkMode ? 'bg-stone-200 text-black' : 'bg-stone-900 text-white'}`}>
               <Calendar size={20} strokeWidth={2} />
             </div>
@@ -515,6 +541,68 @@ export default function App() {
           </div>
           <p className="text-stone-400 text-xs uppercase tracking-[0.2em] font-medium pl-[52px]">Refined Academic Optimization</p>
         </div>
+
+        {isLoggedIn && (
+          <nav className={`flex flex-wrap items-center gap-1.5 p-1 rounded-full border shadow-sm transition-colors ${darkMode ? 'bg-stone-900/80 border-stone-800' : 'bg-stone-100/80 border-stone-200/60'}`}>
+            <button
+              onClick={() => setScreen('final_view')}
+              disabled={!selectedSchedule}
+              className={`px-3.5 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${
+                screen === 'final_view'
+                  ? (darkMode ? 'bg-emerald-950 text-emerald-300 shadow-sm border border-emerald-800/60' : 'bg-emerald-900 text-white shadow-sm')
+                  : selectedSchedule
+                    ? (darkMode ? 'text-stone-300 hover:text-white hover:bg-stone-800/50' : 'text-stone-700 hover:text-stone-950 hover:bg-white/60')
+                    : 'opacity-40 cursor-not-allowed text-stone-400'
+              }`}
+              title={selectedSchedule ? "View Active Saved Timetable" : "Finalize a schedule to unlock"}
+            >
+              <Clock size={12} />
+              <span>My Timetable</span>
+              {selectedSchedule && (
+                <span className={`w-2 h-2 rounded-full ${screen === 'final_view' ? 'bg-emerald-400' : 'bg-emerald-500 animate-pulse'}`} />
+              )}
+            </button>
+
+            <button
+              onClick={() => setScreen('results')}
+              disabled={results.length === 0}
+              className={`px-3.5 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${
+                screen === 'results'
+                  ? (darkMode ? 'bg-stone-200 text-black shadow-sm' : 'bg-stone-900 text-white shadow-sm')
+                  : results.length > 0
+                    ? (darkMode ? 'text-stone-300 hover:text-white hover:bg-stone-800/50' : 'text-stone-700 hover:text-stone-950 hover:bg-white/60')
+                    : 'opacity-40 cursor-not-allowed text-stone-400'
+              }`}
+            >
+              <LayoutDashboard size={12} />
+              <span>Solutions {results.length > 0 ? `(${results.length})` : ''}</span>
+            </button>
+
+            <button
+              onClick={() => setScreen('courses')}
+              className={`px-3.5 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${
+                screen === 'courses' || screen === 'course_summary'
+                  ? (darkMode ? 'bg-stone-200 text-black shadow-sm' : 'bg-stone-900 text-white shadow-sm')
+                  : (darkMode ? 'text-stone-300 hover:text-white hover:bg-stone-800/50' : 'text-stone-700 hover:text-stone-950 hover:bg-white/60')
+              }`}
+            >
+              <BookOpen size={12} />
+              <span>Courses ({courses.length})</span>
+            </button>
+
+            <button
+              onClick={() => setScreen('profile')}
+              className={`px-3.5 py-2 rounded-full text-[10px] font-bold uppercase tracking-wider transition-all flex items-center gap-2 ${
+                screen === 'profile'
+                  ? (darkMode ? 'bg-stone-200 text-black shadow-sm' : 'bg-stone-900 text-white shadow-sm')
+                  : (darkMode ? 'text-stone-300 hover:text-white hover:bg-stone-800/50' : 'text-stone-700 hover:text-stone-950 hover:bg-white/60')
+              }`}
+            >
+              <User size={12} />
+              <span>{user?.name || 'Profile'}</span>
+            </button>
+          </nav>
+        )}
         
         <div className="flex items-center gap-3">
           <button 
@@ -584,7 +672,13 @@ export default function App() {
                 darkMode={darkMode}
                 onLogin={() => {
                   setIsLoggedIn(true);
-                  setScreen('courses');
+                  if (selectedSchedule) {
+                    setScreen('final_view');
+                  } else if (results.length > 0) {
+                    setScreen('results');
+                  } else {
+                    setScreen('courses');
+                  }
                 }} 
                 onDelete={() => handleDeleteUser(user.id)}
                 onBack={() => setScreen('landing')} 
@@ -620,6 +714,10 @@ export default function App() {
                 setCourses={setCourses} 
                 onGenerate={generateSchedules}
                 onViewSummary={() => setScreen('course_summary')}
+                selectedSchedule={selectedSchedule}
+                resultsCount={results.length}
+                onViewSchedule={() => setScreen('final_view')}
+                onViewResults={() => setScreen('results')}
                 darkMode={darkMode}
               />
             </motion.div>
@@ -662,9 +760,33 @@ export default function App() {
             >
               <FinalScheduleScreen 
                 schedule={selectedSchedule} 
-                onBack={() => setScreen('results')} 
+                onBack={() => setScreen(results.length > 0 ? 'results' : 'courses')} 
+                onGoToCourses={() => setScreen('courses')}
                 darkMode={darkMode}
               />
+            </motion.div>
+          )}
+          {screen === 'final_view' && !selectedSchedule && (
+            <motion.div 
+              key="final-empty"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="max-w-md mx-auto text-center space-y-6 pt-12"
+            >
+              <div className={`w-20 h-20 rounded-[2rem] flex items-center justify-center mx-auto border ${darkMode ? 'bg-stone-900 border-stone-800 text-stone-400' : 'bg-white border-stone-200 text-stone-600'}`}>
+                <Calendar size={32} />
+              </div>
+              <div>
+                <h3 className={`text-2xl font-serif italic ${darkMode ? 'text-stone-100' : 'text-stone-900'}`}>No Active Schedule Selected</h3>
+                <p className={`text-xs mt-2 font-serif italic ${darkMode ? 'text-stone-400' : 'text-stone-600'}`}>Select one from your generated solutions or register courses.</p>
+              </div>
+              <div className="flex justify-center gap-3">
+                {results.length > 0 ? (
+                  <button onClick={() => setScreen('results')} className={`px-6 py-3 rounded-full text-xs font-bold uppercase tracking-wider ${darkMode ? 'bg-emerald-400 text-black' : 'bg-emerald-900 text-white'}`}>View Solutions ({results.length})</button>
+                ) : (
+                  <button onClick={() => setScreen('courses')} className={`px-6 py-3 rounded-full text-xs font-bold uppercase tracking-wider ${darkMode ? 'bg-emerald-400 text-black' : 'bg-emerald-900 text-white'}`}>Go to Courses</button>
+                )}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -1192,7 +1314,27 @@ function ProfileScreen({ onSubmit, initialData, isLoggedIn, darkMode, onBack, ha
   );
 }
 
-function CourseInputScreen({ courses, setCourses, onGenerate, onViewSummary, darkMode }: { courses: Course[], setCourses: any, onGenerate: () => void, onViewSummary: () => void, darkMode: boolean }) {
+function CourseInputScreen({ 
+  courses, 
+  setCourses, 
+  onGenerate, 
+  onViewSummary, 
+  darkMode,
+  selectedSchedule,
+  resultsCount = 0,
+  onViewSchedule,
+  onViewResults
+}: { 
+  courses: Course[], 
+  setCourses: any, 
+  onGenerate: () => void, 
+  onViewSummary: () => void, 
+  darkMode: boolean,
+  selectedSchedule?: Schedule | null,
+  resultsCount?: number,
+  onViewSchedule?: () => void,
+  onViewResults?: () => void
+}) {
   const [isAddingCourse, setIsAddingCourse] = useState(false);
   const [isExtractingAI, setIsExtractingAI] = useState(false);
   const [extractingProgress, setExtractingProgress] = useState(false);
@@ -1377,6 +1519,32 @@ function CourseInputScreen({ courses, setCourses, onGenerate, onViewSummary, dar
               <p className={`text-[11px] font-serif italic font-medium ${darkMode ? 'text-stone-400' : 'text-stone-800'}`}>We found {courses.length} classes to organize into your schedule.</p>
             </div>
             <div className="space-y-3">
+              {selectedSchedule && onViewSchedule && (
+                <button 
+                  onClick={onViewSchedule}
+                  className={`w-full font-bold py-4 rounded-full text-[10px] transition-all uppercase tracking-[0.2em] shadow-md flex items-center justify-center gap-2 border ${
+                    darkMode 
+                      ? 'bg-emerald-950 text-emerald-300 border-emerald-800/80 hover:bg-emerald-900' 
+                      : 'bg-emerald-50 text-emerald-950 border-emerald-200 hover:bg-emerald-100'
+                  }`}
+                >
+                  <Clock size={14} className="text-emerald-500" />
+                  View Active Schedule
+                </button>
+              )}
+              {resultsCount > 0 && onViewResults && (
+                <button 
+                  onClick={onViewResults}
+                  className={`w-full font-bold py-3.5 rounded-full text-[9px] transition-all uppercase tracking-[0.2em] border flex items-center justify-center gap-2 ${
+                    darkMode 
+                      ? 'bg-stone-800 text-stone-300 border-stone-700 hover:bg-stone-700' 
+                      : 'bg-stone-100 text-stone-800 border-stone-200 hover:bg-stone-200'
+                  }`}
+                >
+                  <LayoutDashboard size={13} />
+                  Solutions ({resultsCount})
+                </button>
+              )}
               <button 
                 onClick={onGenerate}
                 className={`w-full font-bold py-5 rounded-full text-[11px] transition-all uppercase tracking-[0.2em] shadow-xl ${
@@ -1405,6 +1573,47 @@ function CourseInputScreen({ courses, setCourses, onGenerate, onViewSummary, dar
       </div>
 
       <div className="md:col-span-8 flex flex-col gap-6">
+        {selectedSchedule && onViewSchedule && (
+          <div className={`p-6 rounded-[2rem] border shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition-all ${
+            darkMode ? 'bg-emerald-950/20 border-emerald-900/40 text-emerald-200' : 'bg-emerald-50/70 border-emerald-100 text-emerald-950'
+          }`}>
+            <div className="flex items-center gap-4">
+              <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${darkMode ? 'bg-emerald-400 text-black' : 'bg-emerald-900 text-white'}`}>
+                <Calendar size={22} />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <p className={`text-[10px] font-bold uppercase tracking-widest ${darkMode ? 'text-emerald-400' : 'text-emerald-800'}`}>Active Timetable Saved</p>
+                  <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                </div>
+                <p className={`text-base font-serif italic mt-0.5 ${darkMode ? 'text-stone-100' : 'text-stone-900'}`}>
+                  {selectedSchedule.courses.length} courses enrolled • Zero clashes
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={onViewSchedule}
+                className={`px-5 py-3 rounded-full text-[10px] font-bold uppercase tracking-widest flex items-center gap-2 shadow-sm ${
+                  darkMode ? 'bg-emerald-400 text-black hover:bg-emerald-300' : 'bg-emerald-900 text-white hover:bg-emerald-950'
+                }`}
+              >
+                <span>View Timetable</span>
+                <ChevronRight size={14} />
+              </button>
+              {resultsCount > 0 && onViewResults && (
+                <button
+                  onClick={onViewResults}
+                  className={`px-4 py-3 rounded-full text-[10px] font-bold uppercase tracking-widest border transition-colors ${
+                    darkMode ? 'border-emerald-800 text-emerald-300 hover:bg-emerald-950/40' : 'border-emerald-200 text-emerald-900 hover:bg-emerald-100/50'
+                  }`}
+                >
+                  All Solutions ({resultsCount})
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         <AnimatePresence>
           {isExtractingAI && (
             <motion.div
@@ -2121,7 +2330,40 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
   );
 }
 
-function FinalScheduleScreen({ schedule, onBack, darkMode }: { schedule: Schedule, onBack: () => void, darkMode: boolean }) {
+function FinalScheduleScreen({ 
+  schedule, 
+  onBack, 
+  onGoToCourses, 
+  darkMode 
+}: { 
+  schedule: Schedule, 
+  onBack: () => void, 
+  onGoToCourses?: () => void, 
+  darkMode: boolean 
+}) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleExportPDF = async () => {
+    try {
+      setDownloading(true);
+      const element = document.querySelector('.print-card');
+      if (!element) return;
+      const opt = {
+        margin: 0.3,
+        filename: `Scholarly_Timetable.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' }
+      };
+      await (html2pdf() as any).set(opt).from(element as HTMLElement).save();
+    } catch (e) {
+      console.error(e);
+      window.print();
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   // Sort courses by day and time for a clean printed view
   const sortedSlots = schedule.courses
     .map(c => c.slots.map(s => ({ ...c, slot: s })))
@@ -2140,9 +2382,37 @@ function FinalScheduleScreen({ schedule, onBack, darkMode }: { schedule: Schedul
 
   return (
     <div className={`max-w-3xl mx-auto space-y-8 pb-20 print-container transition-colors duration-300`}>
-      <div className="flex items-center justify-between no-print">
-        <button onClick={onBack} className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest transition-colors ${darkMode ? 'text-stone-600 hover:text-stone-100' : 'text-stone-400 hover:text-stone-900'}`}>
-          <ArrowLeft size={14} /> Return to Solutions
+      <div className="flex flex-wrap items-center justify-between gap-3 no-print">
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={onBack} 
+            className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest px-4 py-2.5 rounded-full border transition-colors ${
+              darkMode ? 'text-stone-300 border-stone-800 hover:bg-stone-900' : 'text-stone-700 border-stone-200 hover:bg-stone-100'
+            }`}
+          >
+            <ArrowLeft size={14} /> Solutions
+          </button>
+          {onGoToCourses && (
+            <button 
+              onClick={onGoToCourses} 
+              className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest px-4 py-2.5 rounded-full border transition-colors ${
+                darkMode ? 'text-stone-300 border-stone-800 hover:bg-stone-900' : 'text-stone-700 border-stone-200 hover:bg-stone-100'
+              }`}
+            >
+              <BookOpen size={14} /> Edit Courses
+            </button>
+          )}
+        </div>
+
+        <button
+          onClick={handleExportPDF}
+          disabled={downloading}
+          className={`flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest px-5 py-2.5 rounded-full shadow-sm transition-all ${
+            darkMode ? 'bg-stone-200 text-black hover:bg-white' : 'bg-stone-900 text-white hover:bg-black'
+          }`}
+        >
+          {downloading ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          <span>{downloading ? 'Exporting...' : 'Export PDF'}</span>
         </button>
       </div>
 
@@ -2153,8 +2423,14 @@ function FinalScheduleScreen({ schedule, onBack, darkMode }: { schedule: Schedul
               <h2 className="text-3xl font-serif italic mb-2 tracking-tight">Class Timetable</h2>
               <p className={`text-sm font-serif italic ${darkMode ? 'text-stone-500' : 'text-stone-400'}`}>Conflict-free schedule found for this term</p>
             </div>
-            <div className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest border ${darkMode ? 'bg-emerald-900/20 text-emerald-400 border-emerald-900/30' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'}`}>
-              Verified
+            <div className="flex flex-col items-end gap-1">
+              <div className={`px-4 py-1.5 rounded-full text-[10px] font-bold uppercase tracking-widest border flex items-center gap-1.5 ${
+                darkMode ? 'bg-emerald-950/60 text-emerald-400 border-emerald-900/60' : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+              }`}>
+                <CheckCircle2 size={12} className="text-emerald-500" />
+                <span>Active Timetable Saved</span>
+              </div>
+              <span className={`text-[9px] uppercase tracking-wider ${darkMode ? 'text-stone-500' : 'text-stone-400'}`}>Automatically retained across sessions</span>
             </div>
           </div>
           

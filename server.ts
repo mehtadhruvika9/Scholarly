@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type } from '@google/genai';
@@ -10,15 +11,46 @@ dotenv.config();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const apiKey = process.env.GEMINI_API_KEY;
-const ai = new GoogleGenAI({
-  apiKey: apiKey || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+function getAiClient(): GoogleGenAI {
+  const apiKey = process.env.GEMINI_API_KEY;
+  return new GoogleGenAI({
+    apiKey: apiKey || '',
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
+
+function formatGeminiError(error: any): string {
+  const raw = error?.message || (typeof error === 'string' ? error : '');
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed?.error?.message) {
+      if (
+        parsed.error.status === 'PERMISSION_DENIED' ||
+        parsed.error.code === 403 ||
+        parsed.error.message.includes('leaked')
+      ) {
+        return 'Your API key was reported as leaked or invalid. Please select or enter a valid API key in the Settings > Secrets panel.';
+      }
+      return parsed.error.message;
+    }
+  } catch {
+    // not json
+  }
+
+  if (
+    raw.includes('leaked') ||
+    raw.includes('PERMISSION_DENIED') ||
+    raw.includes('API_KEY_INVALID')
+  ) {
+    return 'Your API key was reported as leaked or invalid. Please select or enter a valid API key in the Settings > Secrets panel.';
+  }
+
+  return raw || 'Failed to communicate with Gemini AI.';
+}
 
 const DayEnumValues = [
   'Monday',
@@ -32,7 +64,20 @@ const DayEnumValues = [
 
 async function startServer() {
   const app = express();
-  const PORT = Number(process.env.PORT) || 3000;
+  // AI Studio requires the applet server to bind to port 3000 behind nginx (which listens on 8080)
+  const PORT = 3000;
+
+  // CORS headers
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+      return;
+    }
+    next();
+  });
 
   // Middleware to parse large JSON payloads for uploaded timetable images
   app.use(express.json({ limit: '50mb' }));
@@ -90,6 +135,7 @@ Each TimeSlot should have:
 Be extremely accurate with the timings as these are used for collision detection.
 `;
 
+      const ai = getAiClient();
       const response = await ai.models.generateContent({
         model: 'gemini-3.8-flash',
         contents: {
@@ -144,8 +190,9 @@ Be extremely accurate with the timings as these are used for collision detection
       res.json({ courses: parsedCourses });
     } catch (error: any) {
       console.error('Error in /api/courses/extract:', error);
+      const friendlyError = formatGeminiError(error);
       res.status(500).json({
-        error: error.message || 'Failed to extract course timetable data with Gemini.',
+        error: friendlyError,
       });
     }
   });
@@ -163,6 +210,7 @@ Be extremely accurate with the timings as these are used for collision detection
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
 
+      const ai = getAiClient();
       const responseStream = await ai.models.generateContentStream({
         model,
         contents: prompt,
@@ -178,16 +226,17 @@ Be extremely accurate with the timings as these are used for collision detection
       res.end();
     } catch (error: any) {
       console.error('Error in /api/gemini/stream:', error);
+      const friendlyError = formatGeminiError(error);
       if (!res.headersSent) {
-        res.status(500).json({ error: error.message || 'Streaming failed.' });
+        res.status(500).json({ error: friendlyError });
       } else {
-        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: friendlyError })}\n\n`);
         res.end();
       }
     }
   });
 
-  // In production, serve the built Vite app; in dev, mount Vite middleware
+  // In production, serve the built Vite app; in dev, mount Vite middleware + SPA fallback
   if (process.env.NODE_ENV === 'production') {
     const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
@@ -200,6 +249,18 @@ Be extremely accurate with the timings as these are used for collision detection
       appType: 'spa',
     });
     app.use(vite.middlewares);
+
+    app.use('*', async (req: Request, res: Response, next) => {
+      const url = req.originalUrl;
+      try {
+        let template = fs.readFileSync(path.resolve(__dirname, 'index.html'), 'utf-8');
+        template = await vite.transformIndexHtml(url, template);
+        res.status(200).set({ 'Content-Type': 'text/html' }).end(template);
+      } catch (e: any) {
+        vite.ssrFixStacktrace(e);
+        next(e);
+      }
+    });
   }
 
   app.listen(PORT, '0.0.0.0', () => {

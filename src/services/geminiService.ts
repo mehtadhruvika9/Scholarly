@@ -1,99 +1,87 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { Course, Day } from "../types";
+import { Course } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY as string });
-
-export async function extractCoursesFromImages(images: { data: string; mimeType: string }[], courseNameHint?: string): Promise<Course[]> {
-  const model = "gemini-3-flash-preview";
-
-  const imageParts = images.map(img => ({
-    inlineData: {
-      data: img.data.split(",")[1], // Remove "data:image/png;base64," prefix
-      mimeType: img.mimeType,
+export async function extractCoursesFromImages(
+  images: { data: string; mimeType: string }[],
+  courseNameHint?: string
+): Promise<Course[]> {
+  const response = await fetch("/api/courses/extract", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
     },
-  }));
+    body: JSON.stringify({
+      images,
+      courseNameHint,
+    }),
+  });
 
-  const prompt = `
-    Extract all course schedules and section information from these images.
-    ${courseNameHint ? `The user indicated the course name is likely related to: "${courseNameHint}".` : ''}
-    Each course typically has multiple sections, and each section has specific time slots (days and timings).
-    
-    Return the data as a list of courses. 
-    Each Course should have:
-    - id: a unique string
-    - name: the course title or code ${courseNameHint ? `(Please use "${courseNameHint}" if the image doesn't explicitly state a clearer one)` : ''}
-    - color: (leave empty, will be assigned in UI)
-    - sections: a list of Section objects
-    
-    Each Section should have:
-    - id: a unique string
-    - name: the section identifier (e.g., "Section A", "L1")
-    - slots: a list of TimeSlot objects
-    
-    Each TimeSlot should have:
-    - day: one of Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
-    - startTime: "HH:mm" (24-hour format)
-    - endTime: "HH:mm" (24-hour format)
+  if (!response.ok) {
+    let errorMessage = `Server error (${response.status})`;
+    try {
+      const errorData = await response.json();
+      if (errorData?.error) {
+        errorMessage = errorData.error;
+      }
+    } catch {
+      // Use fallback error message
+    }
+    throw new Error(errorMessage);
+  }
 
-    Be extremely accurate with the timings as these are used for collision detection.
-  `;
+  const data = await response.json();
+  if (!data || !Array.isArray(data.courses)) {
+    throw new Error("Invalid response format received from server.");
+  }
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: {
-      parts: [
-        ...imageParts,
-        { text: prompt }
-      ],
+  return data.courses as Course[];
+}
+
+/**
+ * Helper to call server-side streaming endpoint if needed
+ */
+export async function streamGemini(
+  prompt: string,
+  onChunk: (text: string) => void
+): Promise<void> {
+  const response = await fetch("/api/gemini/stream", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
     },
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.ARRAY,
-        items: {
-          type: Type.OBJECT,
-          properties: {
-            id: { type: Type.STRING },
-            name: { type: Type.STRING },
-            color: { type: Type.STRING },
-            sections: {
-              type: Type.ARRAY,
-              items: {
-                type: Type.OBJECT,
-                properties: {
-                  id: { type: Type.STRING },
-                  name: { type: Type.STRING },
-                  slots: {
-                    type: Type.ARRAY,
-                    items: {
-                      type: Type.OBJECT,
-                      properties: {
-                        day: { 
-                          type: Type.STRING,
-                          enum: Object.values(Day)
-                        },
-                        startTime: { type: Type.STRING },
-                        endTime: { type: Type.STRING },
-                      },
-                      required: ["day", "startTime", "endTime"]
-                    }
-                  }
-                },
-                required: ["id", "name", "slots"]
-              }
-            }
-          },
-          required: ["id", "name", "sections"]
+    body: JSON.stringify({ prompt }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.error || `Streaming failed (${response.status})`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("No response body readable");
+
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        const raw = line.slice(6).trim();
+        if (raw === "[DONE]") return;
+        try {
+          const parsed = JSON.parse(raw);
+          if (parsed.text) {
+            onChunk(parsed.text);
+          }
+        } catch {
+          // Ignore parse errors on malformed lines
         }
       }
     }
-  });
-
-  try {
-    const rawData = JSON.parse(response.text);
-    return rawData as Course[];
-  } catch (error) {
-    console.error("Failed to parse Gemini response", error);
-    throw new Error("AI failed to extract schedule data. Please check image quality.");
   }
 }
