@@ -9,21 +9,55 @@ export async function extractCoursesFromImages(
   images: { data: string; mimeType: string }[],
   courseNameHint?: string
 ): Promise<Course[]> {
-  const response = await fetch("/api/courses/extract", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      images,
-      courseNameHint,
-    }),
-  });
+  let response: Response | null = null;
+  let networkError: any = null;
+
+  // Attempt up to 2 times to handle transient server warmup or brief route 404 during restarts
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      response = await fetch("/api/courses/extract", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          images,
+          courseNameHint,
+        }),
+      });
+
+      // If server returned 404 or >= 500 on first try, wait 750ms and retry once
+      if ((response.status === 404 || response.status >= 500) && attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
+      break;
+    } catch (err: any) {
+      networkError = err;
+      if (attempt === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        continue;
+      }
+    }
+  }
+
+  if (!response) {
+    const err: ExtractCourseError = new Error(
+      networkError?.message || "Could not connect to the extraction service. Please check your network or retry."
+    );
+    err.isTransientError = true;
+    throw err;
+  }
 
   if (!response.ok) {
     let errorMessage = `Server error (${response.status})`;
     let isKeyError = response.status === 403;
-    let isTransientError = response.status === 503 || response.status === 429;
+    let isTransientError = response.status === 404 || response.status === 503 || response.status === 429 || response.status >= 500;
+
+    if (response.status === 404) {
+      errorMessage = "The extraction service is currently warming up. Please click Retry Scanning Now or enter courses manually.";
+    }
+
     try {
       const errorData = await response.json();
       if (errorData?.error) {
@@ -38,6 +72,7 @@ export async function extractCoursesFromImages(
     } catch {
       // Use fallback error message
     }
+
     const err: ExtractCourseError = new Error(errorMessage);
     err.isKeyError = isKeyError;
     err.isTransientError = isTransientError;

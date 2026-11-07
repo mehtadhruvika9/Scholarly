@@ -2163,7 +2163,13 @@ async function optimizeImageForUpload(file: File): Promise<{ data: string; mimeT
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        let quality = 0.82;
+        let dataUrl = canvas.toDataURL('image/jpeg', quality);
+        // If base64 payload is large, adjust quality to ensure it easily fits within Vercel's 4.5MB request limit
+        if (dataUrl.length > 700000) {
+          quality = 0.72;
+          dataUrl = canvas.toDataURL('image/jpeg', quality);
+        }
         resolve({ data: dataUrl, mimeType: 'image/jpeg' });
         return;
       }
