@@ -1,5 +1,10 @@
 import { Course } from "../types";
 
+export interface ExtractCourseError extends Error {
+  isKeyError?: boolean;
+  isTransientError?: boolean;
+}
+
 export async function extractCoursesFromImages(
   images: { data: string; mimeType: string }[],
   courseNameHint?: string
@@ -17,15 +22,26 @@ export async function extractCoursesFromImages(
 
   if (!response.ok) {
     let errorMessage = `Server error (${response.status})`;
+    let isKeyError = response.status === 403;
+    let isTransientError = response.status === 503 || response.status === 429;
     try {
       const errorData = await response.json();
       if (errorData?.error) {
         errorMessage = errorData.error;
       }
+      if (errorData?.isKeyError !== undefined) {
+        isKeyError = !!errorData.isKeyError;
+      }
+      if (errorData?.isTransientError !== undefined) {
+        isTransientError = !!errorData.isTransientError;
+      }
     } catch {
       // Use fallback error message
     }
-    throw new Error(errorMessage);
+    const err: ExtractCourseError = new Error(errorMessage);
+    err.isKeyError = isKeyError;
+    err.isTransientError = isTransientError;
+    throw err;
   }
 
   const data = await response.json();

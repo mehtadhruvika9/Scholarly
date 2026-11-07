@@ -1624,6 +1624,10 @@ function CourseInputScreen({
               <AIExtractionPanel 
                 darkMode={darkMode}
                 onCancel={() => setIsExtractingAI(false)}
+                onSwitchToManual={() => {
+                  setIsExtractingAI(false);
+                  setIsAddingCourse(true);
+                }}
                 onDataExtracted={(extractedCourses) => {
                   // Assign colors and unique IDs to new courses and their sections to prevent key collisions
                   const coloredCourses = extractedCourses.map((c, i) => ({
@@ -2126,11 +2130,73 @@ function ResultsScreen({ results, onBack, onSelect, darkMode }: { results: Sched
   );
 }
 
-function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: () => void, onDataExtracted: (courses: Course[]) => void, darkMode: boolean }) {
+async function optimizeImageForUpload(file: File): Promise<{ data: string; mimeType: string }> {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith('image/')) {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve({ data: reader.result as string, mimeType: file.type || 'image/png' });
+      reader.readAsDataURL(file);
+      return;
+    }
+
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const MAX_DIM = 1200; // Optimal resolution: sharp text, tiny payload
+      let width = img.width;
+      let height = img.height;
+      if (width > MAX_DIM || height > MAX_DIM) {
+        if (width > height) {
+          height = Math.round((height * MAX_DIM) / width);
+          width = MAX_DIM;
+        } else {
+          width = Math.round((width * MAX_DIM) / height);
+          height = MAX_DIM;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        resolve({ data: dataUrl, mimeType: 'image/jpeg' });
+        return;
+      }
+      const reader = new FileReader();
+      reader.onloadend = () => resolve({ data: reader.result as string, mimeType: file.type || 'image/png' });
+      reader.readAsDataURL(file);
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      const reader = new FileReader();
+      reader.onloadend = () => resolve({ data: reader.result as string, mimeType: file.type || 'image/png' });
+      reader.readAsDataURL(file);
+    };
+    img.src = url;
+  });
+}
+
+function AIExtractionPanel({ 
+  onCancel, 
+  onDataExtracted, 
+  onSwitchToManual,
+  darkMode 
+}: { 
+  onCancel: () => void; 
+  onDataExtracted: (courses: Course[]) => void; 
+  onSwitchToManual?: () => void;
+  darkMode: boolean;
+}) {
   const [courseNameHint, setCourseNameHint] = useState('');
   const [files, setFiles] = useState<{ file: File; preview: string }[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [processingStatus, setProcessingStatus] = useState<string>('');
+  const [errorState, setErrorState] = useState<{ message: string; isKeyError: boolean; isTransientError?: boolean } | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -2139,7 +2205,7 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
         preview: URL.createObjectURL(file)
       }));
       setFiles(prev => [...prev, ...newFiles]);
-      setError(null);
+      setErrorState(null);
     }
   };
 
@@ -2153,23 +2219,12 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
   const processImages = async () => {
     if (files.length === 0) return;
     setIsProcessing(true);
-    setError(null);
+    setErrorState(null);
+    setProcessingStatus('Optimizing image...');
 
     try {
-      const imagePromises = files.map(f => {
-        return new Promise<{ data: string; mimeType: string }>((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            resolve({
-              data: reader.result as string,
-              mimeType: f.file.type
-            });
-          };
-          reader.readAsDataURL(f.file);
-        });
-      });
-
-      const imageData = await Promise.all(imagePromises);
+      const imageData = await Promise.all(files.map(f => optimizeImageForUpload(f.file)));
+      setProcessingStatus('Analyzing schedule...');
       const extracted = await extractCoursesFromImages(imageData, courseNameHint);
       
       // Prioritize the user-provided course name hint if AI failed or user wants specific name
@@ -2182,10 +2237,24 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
 
       onDataExtracted(processed);
     } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Failed to process images. Please ensure they contain clear timetable text.");
+      console.log('Image extraction notice:', err);
+      const isKey = !!err?.isKeyError || 
+        err?.message?.includes('API key') || 
+        err?.message?.includes('leaked') ||
+        err?.message?.includes('PERMISSION_DENIED');
+      const isTransient = !!err?.isTransientError ||
+        err?.message?.includes('high demand') ||
+        err?.message?.includes('temporarily') ||
+        err?.message?.includes('overloaded') ||
+        err?.message?.includes('Spikes in demand');
+      setErrorState({
+        message: err.message || "Failed to process images. Please ensure they contain clear timetable text.",
+        isKeyError: isKey,
+        isTransientError: isTransient
+      });
     } finally {
       setIsProcessing(false);
+      setProcessingStatus('');
     }
   };
 
@@ -2277,10 +2346,85 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
           </div>
         )}
 
-        {error && (
-          <div className={`p-4 rounded-2xl flex items-start gap-3 border ${darkMode ? 'bg-rose-950/20 border-rose-900/30 text-rose-400' : 'bg-rose-50 border-rose-100 text-rose-600'}`}>
-            <AlertCircle className="shrink-0 mt-0.5" size={18} />
-            <p className="text-xs font-medium leading-relaxed">{error}</p>
+        {errorState && (
+          <div className={`p-5 rounded-2xl border space-y-3 transition-all ${
+            errorState.isKeyError || errorState.isTransientError
+              ? (darkMode ? 'bg-amber-950/30 border-amber-800/40 text-amber-200' : 'bg-amber-50 border-amber-200 text-amber-900')
+              : (darkMode ? 'bg-rose-950/20 border-rose-900/30 text-rose-400' : 'bg-rose-50 border-rose-100 text-rose-600')
+          }`}>
+            <div className="flex items-start gap-3">
+              <AlertCircle className={`shrink-0 mt-0.5 ${errorState.isKeyError || errorState.isTransientError ? 'text-amber-500' : 'text-rose-500'}`} size={18} />
+              <div className="space-y-1">
+                <p className="text-xs font-bold uppercase tracking-wider">
+                  {errorState.isKeyError 
+                    ? 'API Key Notice' 
+                    : errorState.isTransientError 
+                      ? 'High Demand Notice' 
+                      : 'Extraction Notice'}
+                </p>
+                <p className="text-xs leading-relaxed opacity-90">{errorState.message}</p>
+              </div>
+            </div>
+
+            <div className="pt-3 border-t border-amber-500/20 flex flex-wrap items-center gap-2">
+              {errorState.isTransientError && (
+                <button
+                  type="button"
+                  onClick={processImages}
+                  disabled={isProcessing}
+                  className="px-4 py-2 text-xs font-bold rounded-xl bg-amber-500 text-black hover:bg-amber-400 transition-colors shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <RefreshCw size={12} className={isProcessing ? 'animate-spin' : ''} />
+                  Retry Scanning Now
+                </button>
+              )}
+              {onSwitchToManual && (
+                <button
+                  type="button"
+                  onClick={onSwitchToManual}
+                  className={`px-4 py-2 text-xs font-bold rounded-xl transition-colors ${
+                    errorState.isKeyError 
+                      ? 'bg-amber-500 text-black hover:bg-amber-400 shadow-sm' 
+                      : darkMode ? 'bg-stone-800 text-stone-200 hover:bg-stone-700' : 'bg-white text-stone-700 border border-stone-200 hover:bg-stone-50'
+                  }`}
+                >
+                  Enter Course Manually
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  const sampleCourse: Course = {
+                    id: `sample-${Date.now()}`,
+                    name: courseNameHint.trim() || 'Psychology 101 (Sample)',
+                    color: 'bg-emerald-600',
+                    sections: [
+                      {
+                        id: `sec-${Date.now()}-1`,
+                        name: 'Lecture 01',
+                        slots: [
+                          { day: Day.Monday, startTime: '09:00', endTime: '10:30' },
+                          { day: Day.Wednesday, startTime: '09:00', endTime: '10:30' }
+                        ]
+                      },
+                      {
+                        id: `sec-${Date.now()}-2`,
+                        name: 'Lab 01',
+                        slots: [
+                          { day: Day.Friday, startTime: '11:00', endTime: '13:00' }
+                        ]
+                      }
+                    ]
+                  };
+                  onDataExtracted([sampleCourse]);
+                }}
+                className={`px-3 py-2 text-xs font-bold rounded-xl border transition-colors ${
+                  darkMode ? 'bg-stone-800 border-stone-700 text-stone-200 hover:bg-stone-700' : 'bg-white border-stone-200 text-stone-700 hover:bg-stone-50'
+                }`}
+              >
+                Load Sample Course
+              </button>
+            </div>
           </div>
         )}
 
@@ -2303,8 +2447,8 @@ function AIExtractionPanel({ onCancel, onDataExtracted, darkMode }: { onCancel: 
           >
             {isProcessing ? (
               <>
-                <Loader2 size={18} className="animate-spin" />
-                <span className="text-xs uppercase tracking-[0.2em]">Processing...</span>
+                <Loader2 size={18} className="animate-spin text-emerald-400" />
+                <span className="text-xs uppercase tracking-[0.15em]">{processingStatus || 'Processing...'}</span>
               </>
             ) : (
               <>

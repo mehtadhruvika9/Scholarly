@@ -7,6 +7,19 @@
     <meta name="description" content="A smart scheduling app to help students create conflict-free class timetables automatically." />
     <meta property="og:title" content="Student Planner" />
     <meta property="og:description" content="A smart scheduling app to help students create conflict-free class timetables automatically." />
+    <script>
+      // Gracefully prevent unhandled rejection popups from dev tooling WebSocket disconnections
+      window.addEventListener('unhandledrejection', function (e) {
+        if (
+          e.reason &&
+          (String(e.reason).includes('WebSocket') ||
+            String(e.reason?.message || '').includes('WebSocket') ||
+            String(e.reason).includes('ws'))
+        ) {
+          e.preventDefault();
+        }
+      });
+    </script>
   </head>
   <body>
     <div id="root"></div>
