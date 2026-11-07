@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { extractCoursesCore, parseGeminiError } from '../_lib/geminiBackend.ts';
+import { extractCoursesCore, parseGeminiError } from '../_lib/geminiBackend.js';
 
 export const config = {
   api: {

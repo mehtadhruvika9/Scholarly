@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { getAiClient, parseGeminiError } from '../_lib/geminiBackend.ts';
+import { getAiClient, parseGeminiError } from '../_lib/geminiBackend.js';
 
 export const config = {
   maxDuration: 60,

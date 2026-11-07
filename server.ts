@@ -17,7 +17,7 @@ import {
   getAiClient,
   parseGeminiError,
   extractCoursesCore,
-} from './api/_lib/geminiBackend.ts';
+} from './api/_lib/geminiBackend.js';
 
 async function startServer() {
   const app = express();
