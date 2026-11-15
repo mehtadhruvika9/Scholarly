@@ -327,6 +327,9 @@ export default function App() {
       setResults([]);
       setSelectedSchedule(null);
       setIsLoggedIn(false);
+      localStorage.setItem('timetable_is_logged_in', 'false');
+      localStorage.removeItem('timetable_active_user_id');
+      localStorage.removeItem('timetable_screen');
     }
     
     if (updatedUsers.length === 0) {
@@ -661,6 +664,7 @@ export default function App() {
                 isLoggedIn={isLoggedIn}
                 darkMode={darkMode}
                 onBack={() => setScreen('landing')}
+                onDelete={isLoggedIn && user ? () => handleDeleteUser(user.id) : undefined}
                 hasExistingUsers={users.length > 0}
               />
             </motion.div>
@@ -1120,11 +1124,12 @@ function CourseSummaryScreen({ courses, onBack, darkMode }: { courses: Course[],
   );
 }
 
-function ProfileScreen({ onSubmit, initialData, isLoggedIn, darkMode, onBack, hasExistingUsers }: { onSubmit: (u: UserProfile) => void, initialData: UserProfile | null, isLoggedIn: boolean, darkMode: boolean, onBack?: () => void, hasExistingUsers?: boolean }) {
+function ProfileScreen({ onSubmit, initialData, isLoggedIn, darkMode, onBack, onDelete, hasExistingUsers }: { onSubmit: (u: UserProfile) => void, initialData: UserProfile | null, isLoggedIn: boolean, darkMode: boolean, onBack?: () => void, onDelete?: () => void, hasExistingUsers?: boolean }) {
   const [name, setName] = useState(initialData?.name || '');
   const [semester, setSemester] = useState(initialData?.semester || 1);
   const [avatarIcon, setAvatarIcon] = useState(initialData?.avatarIcon || '');
   const [error, setError] = useState<string | null>(null);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
   useEffect(() => {
     if (initialData && isLoggedIn) {
@@ -1273,6 +1278,50 @@ function ProfileScreen({ onSubmit, initialData, isLoggedIn, darkMode, onBack, ha
           </button>
         )}
       </form>
+
+      {isLoggedIn && onDelete && (
+        <div className={`mt-8 pt-6 border-t ${darkMode ? 'border-stone-800' : 'border-stone-100'}`}>
+          {showDeleteConfirm ? (
+            <div className="space-y-3">
+              <p className={`text-center text-xs font-serif italic mb-2 ${darkMode ? 'text-rose-300' : 'text-rose-800'}`}>
+                Permanently delete this profile and all its saved courses and timetables?
+              </p>
+              <button
+                type="button"
+                onClick={onDelete}
+                className="w-full bg-rose-900 text-white py-4 rounded-full font-bold flex items-center justify-center gap-3 hover:bg-rose-950 transition-all shadow-sm uppercase tracking-widest text-[10px]"
+              >
+                <Trash2 size={15} />
+                <span>Confirm Deletion</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowDeleteConfirm(false)}
+                className={`w-full py-3.5 rounded-full font-bold uppercase tracking-widest text-[10px] transition-all border ${
+                  darkMode
+                    ? 'bg-stone-800 text-stone-400 border-stone-700 hover:bg-stone-700 hover:text-stone-100'
+                    : 'bg-stone-50 text-stone-600 border-stone-100 hover:bg-stone-100'
+                }`}
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setShowDeleteConfirm(true)}
+              className={`w-full border py-4 rounded-full font-bold flex items-center justify-center gap-3 transition-all uppercase tracking-widest text-[10px] ${
+                darkMode
+                  ? 'bg-transparent text-rose-400 border-rose-900/30 hover:bg-rose-900/10 hover:text-rose-300'
+                  : 'bg-white text-rose-900 border-rose-100 hover:bg-rose-50'
+              }`}
+            >
+              <Trash2 size={15} />
+              <span>Delete Profile</span>
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
