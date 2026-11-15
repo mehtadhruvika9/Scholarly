@@ -72,7 +72,7 @@ async function startServer() {
         });
         return;
       }
-      const statusCode = error?.statusCode || 500;
+      const statusCode = error?.statusCode || (isTransientError ? 503 : 500);
       res.status(statusCode).json({
         error: friendlyError,
         isKeyError: false,
@@ -84,7 +84,7 @@ async function startServer() {
   // Streaming endpoint for any future or dynamic streaming requests
   app.post('/api/gemini/stream', async (req: Request, res: Response): Promise<void> => {
     try {
-      const { prompt, model = 'gemini-flash-latest' } = req.body;
+      const { prompt, model = 'gemini-4-hydrogen' } = req.body || {};
       if (!prompt) {
         res.status(400).json({ error: 'Prompt is required.' });
         return;

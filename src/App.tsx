@@ -76,25 +76,73 @@ export default function App() {
   const [dataLoaded, setDataLoaded] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
 
-  // Helper to safely parse storage with fallback
-  const safeGetStorage = <T,>(key: string, fallbackKey?: string): T | null => {
+  // Helper to safely parse per-user storage (never leaking data across accounts)
+  const safeGetStorage = <T,>(key: string, legacyKey?: string): T | null => {
     try {
       const raw = localStorage.getItem(key);
-      if (raw && raw !== 'undefined' && raw !== 'null') {
-        const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed) ? parsed.length > 0 : parsed !== null) return parsed;
+      if (raw !== null && raw !== 'undefined' && raw !== 'null') {
+        return JSON.parse(raw) as T;
       }
-      if (fallbackKey) {
-        const fallbackRaw = localStorage.getItem(fallbackKey);
-        if (fallbackRaw && fallbackRaw !== 'undefined' && fallbackRaw !== 'null') {
-          const parsed = JSON.parse(fallbackRaw);
-          if (Array.isArray(parsed) ? parsed.length > 0 : parsed !== null) return parsed;
+      if (legacyKey) {
+        const legacyRaw = localStorage.getItem(legacyKey);
+        if (legacyRaw !== null && legacyRaw !== 'undefined' && legacyRaw !== 'null') {
+          return JSON.parse(legacyRaw) as T;
         }
       }
     } catch (e) {
       console.warn("Storage parse error", key, e);
     }
     return null;
+  };
+
+  const loadUserData = (targetUserId: string, allowLegacyMigration = false) => {
+    const rawCourses = safeGetStorage<any[]>(
+      `timetable_courses_${targetUserId}`,
+      allowLegacyMigration ? 'timetable_courses' : undefined
+    );
+    const loadedCourses: Course[] = Array.isArray(rawCourses)
+      ? rawCourses.map((c: any) => {
+          if (c.slots && !c.sections) {
+            const updated = { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
+            delete (updated as any).slots;
+            return updated;
+          }
+          return c;
+        })
+      : [];
+
+    const rawResults = safeGetStorage<Schedule[]>(
+      `timetable_results_${targetUserId}`,
+      allowLegacyMigration ? 'timetable_results' : undefined
+    );
+    const loadedResults: Schedule[] = Array.isArray(rawResults) ? rawResults : [];
+
+    const loadedSelected = safeGetStorage<Schedule>(
+      `timetable_selected_schedule_${targetUserId}`,
+      allowLegacyMigration ? 'timetable_selected_schedule' : undefined
+    );
+
+    if (allowLegacyMigration) {
+      // One-time migration of legacy global keys into the user's scoped keys
+      if (localStorage.getItem(`timetable_courses_${targetUserId}`) === null && loadedCourses.length > 0) {
+        localStorage.setItem(`timetable_courses_${targetUserId}`, JSON.stringify(loadedCourses));
+      }
+      if (localStorage.getItem(`timetable_results_${targetUserId}`) === null && loadedResults.length > 0) {
+        localStorage.setItem(`timetable_results_${targetUserId}`, JSON.stringify(loadedResults));
+      }
+      if (localStorage.getItem(`timetable_selected_schedule_${targetUserId}`) === null && loadedSelected) {
+        localStorage.setItem(`timetable_selected_schedule_${targetUserId}`, JSON.stringify(loadedSelected));
+      }
+      localStorage.removeItem('timetable_courses');
+      localStorage.removeItem('timetable_results');
+      localStorage.removeItem('timetable_selected_schedule');
+    }
+
+    setCourses(loadedCourses);
+    setResults(loadedResults);
+    setSelectedSchedule(loadedSelected || null);
+
+    return { loadedCourses, loadedResults, loadedSelected };
   };
 
   // Load from LocalStorage on mount
@@ -117,46 +165,20 @@ export default function App() {
 
       if (activeUser) {
         setUser(activeUser);
-
-        // Load courses safely
-        const loadedCourses = safeGetStorage<any[]>(`timetable_courses_${activeUser.id}`, 'timetable_courses');
-        let initialCourses: Course[] = [];
-        if (loadedCourses && loadedCourses.length > 0) {
-          initialCourses = loadedCourses.map((c) => {
-            let updatedCourse = { ...c };
-            if (c.slots && !c.sections) {
-              updatedCourse.sections = [{ id: 'default', name: 'Original Section', slots: c.slots }];
-              delete (updatedCourse as any).slots;
-            }
-            return updatedCourse;
-          });
-          setCourses(initialCourses);
-        }
-
-        // Load solutions / results safely
-        const loadedResults = safeGetStorage<Schedule[]>(`timetable_results_${activeUser.id}`, 'timetable_results');
-        if (loadedResults && loadedResults.length > 0) {
-          setResults(loadedResults);
-        }
-
-        // Load selected finalized schedule safely
-        const loadedSelected = safeGetStorage<Schedule>(`timetable_selected_schedule_${activeUser.id}`, 'timetable_selected_schedule');
-        if (loadedSelected) {
-          setSelectedSchedule(loadedSelected);
-        }
+        const { loadedResults, loadedSelected } = loadUserData(activeUser.id, parsedUsers.length === 1);
 
         if (savedLogin === 'true') {
           setIsLoggedIn(true);
 
           if (savedScreen && ['courses', 'course_summary', 'results', 'final_view'].includes(savedScreen)) {
             if (savedScreen === 'final_view' && !loadedSelected) {
-              setScreen(loadedResults && loadedResults.length > 0 ? 'results' : 'courses');
+              setScreen(loadedResults.length > 0 ? 'results' : 'courses');
             } else {
               setScreen(savedScreen as any);
             }
           } else if (loadedSelected) {
             setScreen('final_view');
-          } else if (loadedResults && loadedResults.length > 0) {
+          } else if (loadedResults.length > 0) {
             setScreen('results');
           } else {
             setScreen('courses');
@@ -175,7 +197,7 @@ export default function App() {
     }
   }, []);
 
-  // Save changes safely without overwriting non-empty storage with empty states
+  // Save changes strictly to the logged-in user's scoped storage keys
   useEffect(() => {
     if (!dataLoaded) return;
 
@@ -185,20 +207,13 @@ export default function App() {
     
     if (user && isLoggedIn) {
       localStorage.setItem('timetable_active_user_id', user.id);
-
-      if (courses.length > 0) {
-        localStorage.setItem(`timetable_courses_${user.id}`, JSON.stringify(courses));
-        localStorage.setItem('timetable_courses', JSON.stringify(courses));
-      }
-
-      if (results.length > 0) {
-        localStorage.setItem(`timetable_results_${user.id}`, JSON.stringify(results));
-        localStorage.setItem('timetable_results', JSON.stringify(results));
-      }
+      localStorage.setItem(`timetable_courses_${user.id}`, JSON.stringify(courses));
+      localStorage.setItem(`timetable_results_${user.id}`, JSON.stringify(results));
 
       if (selectedSchedule) {
         localStorage.setItem(`timetable_selected_schedule_${user.id}`, JSON.stringify(selectedSchedule));
-        localStorage.setItem('timetable_selected_schedule', JSON.stringify(selectedSchedule));
+      } else {
+        localStorage.removeItem(`timetable_selected_schedule_${user.id}`);
       }
 
       localStorage.setItem('timetable_is_logged_in', 'true');
@@ -213,65 +228,57 @@ export default function App() {
   }, [users, user, courses, results, selectedSchedule, isLoggedIn, dataLoaded, darkMode, screen]);
 
   const handleAuth = (data: UserProfile) => {
-    let existingIndex = -1;
-    if (data.id) {
-      existingIndex = users.findIndex(u => u.id === data.id);
-    }
-    if (existingIndex === -1 && data.name) {
-      existingIndex = users.findIndex(
-        u => u.name.trim().toLowerCase() === data.name.trim().toLowerCase()
-      );
-    }
+    const existingIndex = data.id ? users.findIndex(u => u.id === data.id) : -1;
 
     let updatedUsers = [...users];
     let finalUser: UserProfile;
+    let isBrandNewUser = false;
 
     if (existingIndex > -1) {
       updatedUsers[existingIndex] = { ...data, id: users[existingIndex].id };
       finalUser = updatedUsers[existingIndex];
     } else {
-      const newUser = { ...data, id: data.id || Math.random().toString(36).substring(2, 11) };
+      isBrandNewUser = true;
+      const newUser = {
+        ...data,
+        id: `${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 8)}`
+      };
       updatedUsers.push(newUser);
       finalUser = newUser;
     }
 
     setUsers(updatedUsers);
     setUser(finalUser);
-    
-    // Load courses for this user if they exist
-    const savedCourses = safeGetStorage<any[]>(`timetable_courses_${finalUser.id}`, 'timetable_courses');
-    if (savedCourses && savedCourses.length > 0) {
-      const migrated = savedCourses.map((c: any) => {
-        if (c.slots && !c.sections) {
-          return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
-        }
-        return c;
-      });
-      setCourses(migrated);
-    }
 
-    // Load results and selected schedule
-    const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${finalUser.id}`, 'timetable_results');
-    if (savedResults && savedResults.length > 0) {
-      setResults(savedResults);
-    }
-
-    const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${finalUser.id}`, 'timetable_selected_schedule');
-    if (savedSelectedSchedule) {
-      setSelectedSchedule(savedSelectedSchedule);
-    }
-
-    setIsLoggedIn(true);
-    if (savedSelectedSchedule) {
-      setScreen('final_view');
-    } else {
+    if (isBrandNewUser) {
+      // Brand new accounts always start with a completely clean slate
+      setCourses([]);
+      setResults([]);
+      setSelectedSchedule(null);
+      localStorage.setItem(`timetable_courses_${finalUser.id}`, JSON.stringify([]));
+      localStorage.setItem(`timetable_results_${finalUser.id}`, JSON.stringify([]));
+      localStorage.removeItem(`timetable_selected_schedule_${finalUser.id}`);
+      setIsLoggedIn(true);
       setScreen('courses');
+    } else {
+      const { loadedSelected } = loadUserData(finalUser.id, false);
+      setIsLoggedIn(true);
+      if (loadedSelected) {
+        setScreen('final_view');
+      } else {
+        setScreen('courses');
+      }
     }
   };
 
   const handleLogout = () => {
     setIsLoggedIn(false);
+    setUser(null);
+    setCourses([]);
+    setResults([]);
+    setSelectedSchedule(null);
     localStorage.setItem('timetable_is_logged_in', 'false');
+    localStorage.removeItem('timetable_active_user_id');
     localStorage.removeItem('timetable_screen');
     setScreen('landing');
   };
@@ -280,6 +287,9 @@ export default function App() {
     if (type === 'new') {
       setUser(null);
       setIsLoggedIn(false);
+      setCourses([]);
+      setResults([]);
+      setSelectedSchedule(null);
       setScreen('profile');
     } else {
       if (users.length === 0) {
@@ -292,30 +302,7 @@ export default function App() {
       } else {
         const returningUser = users[0];
         setUser(returningUser);
-        
-        // Load courses for this user
-        const savedCourses = safeGetStorage<any[]>(`timetable_courses_${returningUser.id}`, 'timetable_courses');
-        if (savedCourses && savedCourses.length > 0) {
-          const migrated = savedCourses.map((c: any) => {
-            if (c.slots && !c.sections) {
-              return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
-            }
-            return c;
-          });
-          setCourses(migrated);
-        }
-        
-        // Load results and selected schedule
-        const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${returningUser.id}`, 'timetable_results');
-        if (savedResults && savedResults.length > 0) {
-          setResults(savedResults);
-        }
-
-        const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${returningUser.id}`, 'timetable_selected_schedule');
-        if (savedSelectedSchedule) {
-          setSelectedSchedule(savedSelectedSchedule);
-        }
-        
+        loadUserData(returningUser.id, false);
         setScreen('login');
       }
     }
@@ -323,30 +310,7 @@ export default function App() {
 
   const handleSelectUser = (u: UserProfile) => {
     setUser(u);
-    
-    // Load courses for this user
-    const savedCourses = safeGetStorage<any[]>(`timetable_courses_${u.id}`, 'timetable_courses');
-    if (savedCourses && savedCourses.length > 0) {
-      const migrated = savedCourses.map((c: any) => {
-        if (c.slots && !c.sections) {
-          return { ...c, sections: [{ id: 'default', name: 'Original Section', slots: c.slots }] };
-        }
-        return c;
-      });
-      setCourses(migrated);
-    }
-    
-    // Load results and selected schedule
-    const savedResults = safeGetStorage<Schedule[]>(`timetable_results_${u.id}`, 'timetable_results');
-    if (savedResults && savedResults.length > 0) {
-      setResults(savedResults);
-    }
-
-    const savedSelectedSchedule = safeGetStorage<Schedule>(`timetable_selected_schedule_${u.id}`, 'timetable_selected_schedule');
-    if (savedSelectedSchedule) {
-      setSelectedSchedule(savedSelectedSchedule);
-    }
-    
+    loadUserData(u.id, false);
     setScreen('login');
   };
 
@@ -509,7 +473,6 @@ export default function App() {
     if (user) {
       localStorage.setItem(`timetable_selected_schedule_${user.id}`, JSON.stringify(schedule));
     }
-    localStorage.setItem('timetable_selected_schedule', JSON.stringify(schedule));
     localStorage.setItem('timetable_screen', 'final_view');
     setScreen('final_view');
   };

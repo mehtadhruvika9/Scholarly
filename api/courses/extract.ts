@@ -66,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
       return;
     }
 
-    const statusCode = error?.statusCode || 500;
+    const statusCode = error?.statusCode || (isTransientError ? 503 : 500);
     res.status(statusCode).json({
       error: friendlyError,
       isKeyError: false,

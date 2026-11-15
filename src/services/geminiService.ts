@@ -26,8 +26,8 @@ export async function extractCoursesFromImages(
         }),
       });
 
-      // If server returned 404 or >= 500 on first try, wait 750ms and retry once
-      if ((response.status === 404 || response.status >= 500) && attempt === 0) {
+      // If server returned warmup/gateway error (404/502/504) on first try, wait 750ms and retry once
+      if ((response.status === 404 || response.status === 502 || response.status === 504) && attempt === 0) {
         await new Promise((resolve) => setTimeout(resolve, 750));
         continue;
       }

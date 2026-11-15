@@ -34,7 +34,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse): 
   }
 
   try {
-    const { prompt, model = 'gemini-flash-latest' } = req.body || {};
+    const { prompt, model = 'gemini-4-hydrogen' } = req.body || {};
     if (!prompt) {
       res.status(400).json({ error: 'Prompt is required.' });
       return;

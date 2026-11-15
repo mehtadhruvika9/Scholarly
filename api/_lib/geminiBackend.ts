@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
-import { GoogleGenAI, Type } from '@google/genai';
+import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
 
 // Initialize dotenv if in local development
 try {
@@ -61,6 +61,17 @@ export function isTransientGeminiError(error: any): boolean {
   return false;
 }
 
+export function isModelNotFoundError(error: any): boolean {
+  const raw = error?.message || (typeof error === 'string' ? error : '');
+  const status = error?.status || error?.code || error?.error?.code;
+  return (
+    status === 404 ||
+    status === 'NOT_FOUND' ||
+    raw.includes('NOT_FOUND') ||
+    raw.includes('is not found for API version')
+  );
+}
+
 export function parseGeminiError(error: any): {
   message: string;
   isKeyError: boolean;
@@ -70,7 +81,7 @@ export function parseGeminiError(error: any): {
   const status = error?.status || error?.code || error?.error?.code;
 
   let isKeyError = status === 403 || status === 'PERMISSION_DENIED';
-  let isTransientError = status === 503 || status === 429;
+  let isTransientError = !!error?.isTransientError || status === 503 || status === 429;
   let message = raw;
 
   try {
@@ -112,6 +123,7 @@ export function parseGeminiError(error: any): {
   }
 
   if (
+    raw.includes('timed out') ||
     raw.includes('high demand') ||
     raw.includes('Spikes in demand') ||
     raw.includes('temporarily') ||
@@ -131,7 +143,7 @@ export function parseGeminiError(error: any): {
 
   if (isTransientError) {
     return {
-      message: 'Gemini AI is currently experiencing high demand. Please click "Retry" in a few moments, or enter courses manually.',
+      message: 'Gemini AI is currently experiencing high demand. Please click "Retry Scanning Now" in a few moments, or enter courses manually.',
       isKeyError: false,
       isTransientError: true,
     };
@@ -154,9 +166,115 @@ export const DayEnumValues = [
   'Sunday',
 ];
 
+const DAY_MAP: Record<string, string> = {
+  m: 'Monday',
+  mon: 'Monday',
+  monday: 'Monday',
+  t: 'Tuesday',
+  tu: 'Tuesday',
+  tue: 'Tuesday',
+  tues: 'Tuesday',
+  tuesday: 'Tuesday',
+  w: 'Wednesday',
+  wed: 'Wednesday',
+  wednesday: 'Wednesday',
+  r: 'Thursday',
+  th: 'Thursday',
+  thu: 'Thursday',
+  thur: 'Thursday',
+  thurs: 'Thursday',
+  thursday: 'Thursday',
+  f: 'Friday',
+  fri: 'Friday',
+  friday: 'Friday',
+  s: 'Saturday',
+  sa: 'Saturday',
+  sat: 'Saturday',
+  saturday: 'Saturday',
+  u: 'Sunday',
+  su: 'Sunday',
+  sun: 'Sunday',
+  sunday: 'Sunday',
+};
+
+function normalizeDay(dayRaw: string): string | null {
+  if (!dayRaw || typeof dayRaw !== 'string') return null;
+  const cleaned = dayRaw.trim().toLowerCase();
+  if (DAY_MAP[cleaned]) return DAY_MAP[cleaned];
+  const exact = DayEnumValues.find((d) => d.toLowerCase() === cleaned);
+  return exact || null;
+}
+
+function normalizeTime(timeRaw: string): string | null {
+  if (!timeRaw || typeof timeRaw !== 'string') return null;
+  const cleaned = timeRaw.trim().toUpperCase();
+  const match = cleaned.match(/^(\d{1,2})[:.](\d{2})(?:\s*(AM|PM))?$/);
+  if (!match) return null;
+
+  let hour = parseInt(match[1], 10);
+  const minute = parseInt(match[2], 10);
+  const period = match[3];
+
+  if (period === 'PM' && hour < 12) hour += 12;
+  if (period === 'AM' && hour === 12) hour = 0;
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return `${hour.toString().padStart(2, '0')}:${minute.toString().padStart(2, '0')}`;
+}
+
+function normalizeExtractedCourses(rawData: any, courseNameHint?: string): any[] {
+  let list: any[] = [];
+  if (Array.isArray(rawData)) {
+    list = rawData;
+  } else if (rawData && Array.isArray(rawData.courses)) {
+    list = rawData.courses;
+  }
+
+  const stamp = Date.now();
+  return list
+    .map((course: any, ci: number) => {
+      const rawName = typeof course?.name === 'string' ? course.name.trim() : '';
+      const resolvedName =
+        rawName && rawName.toLowerCase() !== 'unknown'
+          ? rawName
+          : courseNameHint?.trim() || `Course ${ci + 1}`;
+
+      const rawSections = Array.isArray(course?.sections) ? course.sections : [];
+      const sections = rawSections
+        .map((sec: any, si: number) => {
+          const rawSlots = Array.isArray(sec?.slots) ? sec.slots : [];
+          const slots = rawSlots
+            .map((slot: any) => {
+              const day = normalizeDay(slot?.day);
+              const startTime = normalizeTime(slot?.startTime);
+              const endTime = normalizeTime(slot?.endTime);
+              if (!day || !startTime || !endTime) return null;
+              return { day, startTime, endTime };
+            })
+            .filter(Boolean);
+
+          if (slots.length === 0) return null;
+          return {
+            id: typeof sec?.id === 'string' && sec.id.trim() ? sec.id.trim() : `sec-${stamp}-${ci}-${si}`,
+            name: typeof sec?.name === 'string' && sec.name.trim() ? sec.name.trim() : `Section ${si + 1}`,
+            slots,
+          };
+        })
+        .filter(Boolean);
+
+      if (sections.length === 0) return null;
+      return {
+        id: typeof course?.id === 'string' && course.id.trim() ? course.id.trim() : `course-${stamp}-${ci}`,
+        name: resolvedName,
+        color: '',
+        sections,
+      };
+    })
+    .filter(Boolean);
+}
+
 export interface ExtractResult {
   courses: any[];
-  fallbackNotice?: string;
 }
 
 export async function extractCoursesCore(payload: {
@@ -188,134 +306,161 @@ export async function extractCoursesCore(payload: {
   });
 
   const prompt = `
-Extract all course schedules and section information from these images.
-${courseNameHint ? `The user indicated the course name is likely related to: "${courseNameHint}".` : ''}
-Each course typically has multiple sections, and each section has specific time slots (days and timings).
+Extract EVERY course, section, and class time slot shown in these uploaded timetable screenshot(s).
+${courseNameHint ? `The user indicated the course name is: "${courseNameHint}".` : ''}
 
-Return the data as a list of courses. 
-Each Course should have:
-- id: a unique string
-- name: the course title or code ${courseNameHint ? `(Please use "${courseNameHint}" if the image doesn't explicitly state a clearer one)` : ''}
-- color: (leave empty, will be assigned in UI)
-- sections: a list of Section objects
+Instructions:
+1. Read all rows, columns, tables, or calendar blocks accurately from the image(s).
+2. A single course often lists multiple sections (e.g., "Section A", "Section 01", "LEC 1", "L1", "CRN 12345", "Lab 02", "Tut 1"). Extract ALL sections visible in the screenshots — do NOT summarize or invent sections that are not in the image.
+3. Expand abbreviated days into full English day names:
+   - M / Mon -> Monday
+   - T / Tu / Tue / Tues -> Tuesday
+   - W / Wed -> Wednesday
+   - R / Th / Thu / Thur / Thurs -> Thursday
+   - F / Fri -> Friday
+   - S / Sa / Sat -> Saturday
+   - U / Su / Sun -> Sunday
+   If a section meets on multiple days (e.g., "MWF 10:00-10:50" or "TuTh 1:30 PM - 2:45 PM"), emit a separate TimeSlot entry for each day with the exact timings.
+4. Convert all startTime and endTime values into strict 24-hour "HH:mm" format (e.g., "1:30 PM" -> "13:30", "9:05 AM" -> "09:05").
 
-Each Section should have:
-- id: a unique string
-- name: the section identifier (e.g., "Section A", "L1")
-- slots: a list of TimeSlot objects
-
-Each TimeSlot should have:
-- day: one of Monday, Tuesday, Wednesday, Thursday, Friday, Saturday, Sunday
-- startTime: "HH:mm" (24-hour format)
-- endTime: "HH:mm" (24-hour format)
-
-Be extremely accurate with the timings as these are used for collision detection.
+Return a JSON array of courses. Each Course object must contain:
+- id: unique string
+- name: course title or code ${courseNameHint ? `(use "${courseNameHint}" if not clearly shown in the image)` : ''}
+- color: ""
+- sections: array of Section objects, each with:
+  - id: unique string
+  - name: exact section identifier from the image
+  - slots: array of TimeSlot objects ({ day, startTime, endTime })
 `;
 
-  const ai = getAiClient();
-  let response: any = null;
-
-  try {
-    const generatePromise = ai.models.generateContent({
-      model: 'gemini-flash-latest',
-      contents: {
-        parts: [...imageParts, { text: prompt }],
-      },
-      config: {
-        systemInstruction: 'You are an efficient course timetable parser. Extract courses, sections, and class time slots directly from screenshot images into structured JSON.',
-        responseMimeType: 'application/json',
-        responseSchema: {
+  const responseSchema = {
+    type: Type.ARRAY,
+    items: {
+      type: Type.OBJECT,
+      properties: {
+        id: { type: Type.STRING },
+        name: { type: Type.STRING },
+        color: { type: Type.STRING },
+        sections: {
           type: Type.ARRAY,
           items: {
             type: Type.OBJECT,
             properties: {
               id: { type: Type.STRING },
               name: { type: Type.STRING },
-              color: { type: Type.STRING },
-              sections: {
+              slots: {
                 type: Type.ARRAY,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    id: { type: Type.STRING },
-                    name: { type: Type.STRING },
-                    slots: {
-                      type: Type.ARRAY,
-                      items: {
-                        type: Type.OBJECT,
-                        properties: {
-                          day: {
-                            type: Type.STRING,
-                            enum: DayEnumValues,
-                          },
-                          startTime: { type: Type.STRING },
-                          endTime: { type: Type.STRING },
-                        },
-                        required: ['day', 'startTime', 'endTime'],
-                      },
+                    day: {
+                      type: Type.STRING,
+                      enum: DayEnumValues,
                     },
+                    startTime: { type: Type.STRING },
+                    endTime: { type: Type.STRING },
                   },
-                  required: ['id', 'name', 'slots'],
+                  required: ['day', 'startTime', 'endTime'],
                 },
               },
             },
-            required: ['id', 'name', 'sections'],
+            required: ['id', 'name', 'slots'],
           },
         },
       },
+      required: ['id', 'name', 'sections'],
+    },
+  };
+
+  const ai = getAiClient();
+
+  const callModel = async (
+    model: string,
+    timeoutMs: number,
+    thinkingLevel?: ThinkingLevel
+  ) => {
+    const config: any = {
+      systemInstruction:
+        'You are a precision academic timetable OCR parser. Extract the exact courses, section identifiers, days, and 24-hour timings visible in the provided screenshot images into valid JSON.',
+      responseMimeType: 'application/json',
+      responseSchema,
+    };
+    if (thinkingLevel) {
+      config.thinkingConfig = { thinkingLevel };
+    }
+
+    const generatePromise = ai.models.generateContent({
+      model,
+      contents: {
+        parts: [...imageParts, { text: prompt }],
+      },
+      config,
     });
 
-    // Enforce 8.5 second timeout to stay well within serverless function limits
-    response = await Promise.race([
+    return await Promise.race([
       generatePromise,
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('AI generation timed out due to temporary high demand')), 8500)
+      new Promise<never>((_, reject) =>
+        setTimeout(
+          () => reject(new Error('AI generation timed out due to temporary high demand')),
+          timeoutMs
+        )
       ),
     ]);
+  };
 
-    const text = response.text || '[]';
-    const parsedCourses = JSON.parse(text);
-    return { courses: parsedCourses };
+  let response: any = null;
+  let lastError: any = null;
+
+  // Primary attempt: gemini-4-hydrogen with LOW thinking for fast & accurate vision OCR
+  try {
+    response = await callModel('gemini-4-hydrogen', 25000, ThinkingLevel.LOW);
   } catch (err: any) {
-    if (isTransientGeminiError(err)) {
-      console.log('[Notice] AI call slow/high-demand. Instantly drafting fallback course.');
-      const fallbackName = courseNameHint?.trim() || 'Imported Course';
-      const fallbackCourse = {
-        id: `draft-${Date.now()}`,
-        name: fallbackName,
-        color: '',
-        sections: [
-          {
-            id: `sec-${Date.now()}-1`,
-            name: 'Section 01 (Lecture)',
-            slots: [
-              { day: 'Monday', startTime: '09:00', endTime: '10:15' },
-              { day: 'Wednesday', startTime: '09:00', endTime: '10:15' }
-            ]
-          },
-          {
-            id: `sec-${Date.now()}-2`,
-            name: 'Section 02 (Lecture)',
-            slots: [
-              { day: 'Tuesday', startTime: '11:00', endTime: '12:15' },
-              { day: 'Thursday', startTime: '11:00', endTime: '12:15' }
-            ]
-          },
-          {
-            id: `sec-${Date.now()}-3`,
-            name: 'Lab 01',
-            slots: [
-              { day: 'Friday', startTime: '13:00', endTime: '15:00' }
-            ]
-          }
-        ]
-      };
-
-      return {
-        courses: [fallbackCourse],
-        fallbackNotice: 'AI models are at temporary peak capacity. We drafted initial sections for you to review and edit.'
-      };
+    lastError = err;
+    if (isTransientGeminiError(err) || isModelNotFoundError(err)) {
+      console.log('[Notice] Primary model unavailable/slow; retrying with gemini-3.1-flash-lite.');
+      try {
+        response = await callModel('gemini-3.1-flash-lite', 20000);
+        lastError = null;
+      } catch (fallbackErr: any) {
+        lastError = fallbackErr;
+      }
     }
-    throw err;
   }
+
+  if (lastError) {
+    if (isTransientGeminiError(lastError)) {
+      const transientErr: any = new Error(
+        'Gemini AI is currently experiencing high demand. Please click "Retry Scanning Now" in a moment, or enter your course manually.'
+      );
+      transientErr.isTransientError = true;
+      transientErr.statusCode = 503;
+      throw transientErr;
+    }
+    throw lastError;
+  }
+
+  const rawText = (response?.text || '[]').trim();
+  const cleanedText = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  let parsedRaw: any;
+  try {
+    parsedRaw = JSON.parse(cleanedText || '[]');
+  } catch {
+    throw new Error('Could not parse timetable structure from the uploaded image(s). Please try a clearer screenshot.');
+  }
+
+  const normalizedCourses = normalizeExtractedCourses(parsedRaw, courseNameHint);
+  if (normalizedCourses.length === 0) {
+    const emptyErr: any = new Error(
+      'No course sections or class timings could be read from the uploaded image(s). Please upload a clearer screenshot or enter the sections manually.'
+    );
+    emptyErr.statusCode = 422;
+    throw emptyErr;
+  }
+
+  return { courses: normalizedCourses };
 }
